@@ -2,8 +2,10 @@ from __future__ import annotations
 import asyncio, json, re
 from typing import Any
 import pandas as pd
-from copilot import CopilotClient
+from copilot import CopilotClient, RuntimeConnection
 from copilot.session import PermissionHandler
+from copilot.session_events import AssistantMessageData, SessionIdleData
+import os
 
 DATASET = "novacore_enterprise_sample_data"
 SYSTEM = """You are NovaCore Solutions Copilot, an enterprise analytics assistant.
@@ -24,15 +26,47 @@ def _run(coro):
             loop.close()
 
 async def _ask(prompt: str) -> str:
-    client = CopilotClient({"use_logged_in_user": False})
+    token = os.getenv("COPILOT_GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN")
+    if not token:
+        raise RuntimeError("No Copilot GitHub token is configured.")
+
+    runtime_env = dict(os.environ)
+    runtime_env["COPILOT_GITHUB_TOKEN"] = token
+
+    client = CopilotClient(
+        connection=RuntimeConnection.for_stdio(),
+        env=runtime_env,
+        use_logged_in_user=False,
+        base_directory="/tmp/novacore-copilot",
+        log_level="debug",
+    )
+
     await client.start()
     try:
         session = await client.create_session(
             on_permission_request=PermissionHandler.approve_all,
-            model="auto",
+            model="gpt-5",
         )
-        response = await session.send_and_wait(prompt)
-        return (response.data.content or "").strip()
+        try:
+            done = asyncio.Event()
+            answer = {"text": ""}
+
+            def on_event(event):
+                if isinstance(event.data, AssistantMessageData):
+                    answer["text"] = event.data.content or ""
+                elif isinstance(event.data, SessionIdleData):
+                    done.set()
+
+            session.on(on_event)
+            await session.send(prompt)
+            await asyncio.wait_for(done.wait(), timeout=120)
+
+            if not answer["text"].strip():
+                raise RuntimeError("Copilot returned an empty response.")
+
+            return answer["text"].strip()
+        finally:
+            await session.disconnect()
     finally:
         await client.stop()
 
