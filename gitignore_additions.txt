@@ -1,0 +1,12 @@
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Local IDE
+.vscode/
+.idea/
